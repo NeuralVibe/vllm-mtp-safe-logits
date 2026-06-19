@@ -332,11 +332,17 @@ class RejectionSampler(nn.Module):
                 logits, bad_words_token_ids, output_token_ids, metadata.num_draft_tokens
             )
 
+        for processor in sampling_metadata.logitsprocs.argmax_invariant:
+            if getattr(processor, "supports_spec_decode", False):
+                logits = processor.apply(logits)
+
         for processor in sampling_metadata.logitsprocs.non_argmax_invariant:
             if isinstance(processor, MinTokensLogitsProcessor):
                 logits = processor.apply_with_spec_decode(
                     logits, metadata.num_draft_tokens
                 )
+            elif getattr(processor, "supports_spec_decode", False):
+                logits = processor.apply(logits)
         if holder is not None and holder.has_tracked_requests():
             logits = holder.apply_to_logits(
                 logits,

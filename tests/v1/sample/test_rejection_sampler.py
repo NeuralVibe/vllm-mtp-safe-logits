@@ -7,7 +7,9 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from tests.v1.logits_processors.utils import SpecDecodeSafeLogitsProcessor
 from tests.v1.sample.utils import create_allowed_token_ids
+from vllm.config import VllmConfig
 from vllm.platforms import current_platform
 from vllm.v1.sample.logits_processor import LogitsProcessors
 from vllm.v1.sample.metadata import SamplingMetadata
@@ -82,6 +84,7 @@ def create_sampling_metadata(
     repetition_penalties: list[float] | None = None,
     bad_words_token_ids: dict[int, list[list[int]]] | None = None,
     allowed_token_ids_mask: torch.Tensor | None = None,
+    logitsprocs: LogitsProcessors | None = None,
 ) -> SamplingMetadata:
     """Create a v1 sampling metadata object with all_greedy set
     to the given value. Either all greedy or all random sampling
@@ -125,7 +128,7 @@ def create_sampling_metadata(
         spec_token_ids=[] if spec_token_ids is None else spec_token_ids,
         allowed_token_ids_mask=allowed_token_ids_mask,
         bad_words_token_ids={} if bad_words_token_ids is None else bad_words_token_ids,
-        logitsprocs=LogitsProcessors(),
+        logitsprocs=LogitsProcessors() if logitsprocs is None else logitsprocs,
     )
 
 
@@ -303,6 +306,46 @@ def test_parametrized_cases(rejection_sampler, spec_tokens, output_tokens, expec
     )
     expected_tensor = torch.tensor(expected, dtype=torch.int, device=logits.device)
     assert torch.equal(output.sampled_token_ids, expected_tensor)
+
+
+def test_spec_decode_safe_custom_logits_processor_masks_target_logits(
+    rejection_sampler,
+):
+    spec_tokens = [[0]]
+    output_tokens = [[0, 9]]
+
+    logits = create_logits_tensor(
+        output_tokens,
+        vocab_size=10,
+        token_idx_to_override=5,
+    )
+    logitsprocs = LogitsProcessors(
+        [
+            SpecDecodeSafeLogitsProcessor(
+                VllmConfig(),
+                logits.device,
+                is_pin_memory=False,
+            )
+        ]
+    )
+    metadata = create_sampling_metadata(all_greedy=True, logitsprocs=logitsprocs)
+    bonus_token_tensor = torch.tensor([output_tokens[0][-1]], device=logits.device)
+    spec_decode_metadata = create_spec_decode_metadata(spec_tokens, logits)
+
+    mock_sampler_output(rejection_sampler, bonus_token_tensor)
+    output = rejection_sampler(
+        spec_decode_metadata,
+        draft_probs=None,
+        logits=logits,
+        sampling_metadata=metadata,
+    )
+
+    expected = torch.tensor(
+        [[5, PLACEHOLDER_TOKEN_ID]],
+        dtype=torch.int,
+        device=logits.device,
+    )
+    assert torch.equal(output.sampled_token_ids, expected)
 
 
 ########################### Tests for Random Sampling ###################

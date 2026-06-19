@@ -32,6 +32,9 @@ MAX_TOKENS = 20
 DUMMY_LOGITPROC_ENTRYPOINT = "dummy_logitproc"
 DUMMY_LOGITPROC_MODULE = "tests.v1.logits_processors.utils"
 DUMMY_LOGITPROC_FQCN = f"{DUMMY_LOGITPROC_MODULE}:DummyLogitsProcessor"
+SPEC_DECODE_SAFE_LOGITPROC_FQCN = (
+    f"{DUMMY_LOGITPROC_MODULE}:SpecDecodeSafeLogitsProcessor"
+)
 
 
 class CustomLogitprocSource(Enum):
@@ -103,6 +106,26 @@ class DummyLogitsProcessor(LogitsProcessor):
         logits[rows, cols] = values_to_keep
 
         return logits
+
+
+class SpecDecodeSafeLogitsProcessor(LogitsProcessor):
+    """Request-agnostic token mask for speculative decoding tests."""
+
+    supports_spec_decode = True
+
+    def __init__(
+        self, vllm_config: "VllmConfig", device: torch.device, is_pin_memory: bool
+    ):
+        self.blocked_token_ids = torch.tensor([0], dtype=torch.long, device=device)
+
+    def is_argmax_invariant(self) -> bool:
+        return False
+
+    def update_state(self, batch_update: BatchUpdate | None):
+        return None
+
+    def apply(self, logits: torch.Tensor) -> torch.Tensor:
+        return logits.index_fill_(1, self.blocked_token_ids, float("-inf"))
 
 
 class EntryPoint:

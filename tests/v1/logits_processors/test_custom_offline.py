@@ -3,6 +3,7 @@
 from typing import Any
 
 import pytest
+import torch
 
 from tests.utils import create_new_process_for_each_test, set_random_seed
 from tests.v1.logits_processors.utils import (
@@ -14,15 +15,21 @@ from tests.v1.logits_processors.utils import (
     TEMP_GREEDY,
     CustomLogitprocSource,
     DummyLogitsProcessor,
+    SpecDecodeSafeLogitsProcessor,
     WrappedPerReqLogitsProcessor,
     prompts,
     setup_fake_entrypoint,
 )
 from vllm import LLM, SamplingParams
+from vllm.config import VllmConfig
 from vllm.v1.sample.logits_processor import (
     STR_POOLING_REJECTS_LOGITSPROCS,
     STR_SPEC_DEC_REJECTS_LOGITSPROCS,
+    LogitBiasLogitsProcessor,
     LogitsProcessor,
+    MinPLogitsProcessor,
+    MinTokensLogitsProcessor,
+    build_logitsprocs,
 )
 
 # Create a mixture of requests which do and don't utilize the dummy logitproc
@@ -286,3 +293,39 @@ def test_rejects_custom_logitsprocs(
         # Require that loading a model alongside the logitproc raises
         # the appropriate exception.
         LLM(**llm_kwargs)
+
+
+def test_build_logitsprocs_allows_spec_decode_safe_custom():
+    vllm_config = VllmConfig()
+    vllm_config.speculative_config = object()
+
+    logitsprocs = build_logitsprocs(
+        vllm_config=vllm_config,
+        device=torch.device("cpu"),
+        is_pin_memory=False,
+        is_pooling_model=False,
+        custom_logitsprocs=[SpecDecodeSafeLogitsProcessor],
+    )
+
+    assert any(
+        isinstance(proc, SpecDecodeSafeLogitsProcessor) for proc in logitsprocs.all
+    )
+    assert any(isinstance(proc, MinTokensLogitsProcessor) for proc in logitsprocs.all)
+    assert not any(
+        isinstance(proc, LogitBiasLogitsProcessor) for proc in logitsprocs.all
+    )
+    assert not any(isinstance(proc, MinPLogitsProcessor) for proc in logitsprocs.all)
+
+
+def test_build_logitsprocs_rejects_spec_decode_unsafe_custom():
+    vllm_config = VllmConfig()
+    vllm_config.speculative_config = object()
+
+    with pytest.raises(ValueError, match=STR_SPEC_DEC_REJECTS_LOGITSPROCS):
+        build_logitsprocs(
+            vllm_config=vllm_config,
+            device=torch.device("cpu"),
+            is_pin_memory=False,
+            is_pooling_model=False,
+            custom_logitsprocs=[DummyLogitsProcessor],
+        )

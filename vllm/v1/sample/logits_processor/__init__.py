@@ -44,6 +44,7 @@ STR_SPEC_DEC_REJECTS_LOGITSPROCS = (
     "Custom logits processors are not supported when speculative decoding is enabled."
 )
 
+SPEC_DECODE_SAFE_LOGITPROC_ATTR = "supports_spec_decode"
 LOGITSPROCS_GROUP = "vllm.logits_processors"
 
 BUILTIN_LOGITS_PROCESSORS: list[type[LogitsProcessor]] = [
@@ -181,6 +182,22 @@ def _load_custom_logitsprocs(
     return _load_logitsprocs_plugins() + _load_logitsprocs_by_fqcns(logits_processors)
 
 
+def _unsafe_spec_decode_logitsprocs(
+    logitsprocs_classes: Sequence[type[LogitsProcessor]],
+) -> list[type[LogitsProcessor]]:
+    """Return custom logits processors that are unsafe for spec decoding.
+
+    Speculative decoding flattens target logits by draft-token position rather
+    than request index. Only processors that explicitly opt in can be applied
+    safely in that layout.
+    """
+    return [
+        logitsproc
+        for logitsproc in logitsprocs_classes
+        if not bool(getattr(logitsproc, SPEC_DECODE_SAFE_LOGITPROC_ATTR, False))
+    ]
+
+
 def build_logitsprocs(
     vllm_config: "VllmConfig",
     device: torch.device,
@@ -199,13 +216,31 @@ def build_logitsprocs(
 
     # Check if speculative decoding is enabled.
     if vllm_config.speculative_config:
-        if custom_logitsprocs:
-            raise ValueError(STR_SPEC_DEC_REJECTS_LOGITSPROCS)
+        # In spec decode mode, logits rows represent draft-token positions
+        # rather than one row per request. Installed entrypoint plugins remain
+        # disabled here for backwards compatibility; only explicitly supplied
+        # custom processors are considered, and they must opt in.
+        custom_logitsprocs_classes = _load_logitsprocs_by_fqcns(custom_logitsprocs)
+        unsafe_logitsprocs = _unsafe_spec_decode_logitsprocs(
+            custom_logitsprocs_classes
+        )
+        if unsafe_logitsprocs:
+            names = ", ".join(cls.__name__ for cls in unsafe_logitsprocs)
+            raise ValueError(
+                STR_SPEC_DEC_REJECTS_LOGITSPROCS
+                + " To use a custom logits processor with speculative decoding, "
+                f"declare {SPEC_DECODE_SAFE_LOGITPROC_ATTR}=True. "
+                f"Unsafe processors: {names}"
+            )
         logger.warning(
             "min_p and logit_bias parameters won't work with speculative decoding."
         )
         return LogitsProcessors(
-            [MinTokensLogitsProcessor(vllm_config, device, is_pin_memory)]
+            ctor(vllm_config, device, is_pin_memory)
+            for ctor in itertools.chain(
+                [MinTokensLogitsProcessor],
+                custom_logitsprocs_classes,
+            )
         )
 
     custom_logitsprocs_classes = _load_custom_logitsprocs(custom_logitsprocs)
@@ -352,6 +387,8 @@ __all__ = [
     "LogitsProcessors",
     "build_logitsprocs",
     "STR_POOLING_REJECTS_LOGITSPROCS",
+    "STR_SPEC_DEC_REJECTS_LOGITSPROCS",
+    "SPEC_DECODE_SAFE_LOGITPROC_ATTR",
     "LOGITSPROCS_GROUP",
     "AdapterLogitsProcessor",
 ]
