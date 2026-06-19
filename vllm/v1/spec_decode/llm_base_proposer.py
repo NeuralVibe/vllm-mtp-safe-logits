@@ -479,24 +479,59 @@ class SpecDecodeBaseProposer:
 
     def propose(
         self,
-        num_speculative_tokens,
+        num_speculative_tokens: int | torch.Tensor | None = None,
         # [num_tokens]
-        target_token_ids: torch.Tensor,
+        target_token_ids: torch.Tensor | None = None,
         # [num_tokens] or [3, num_tokens] when M-RoPE is enabled
-        target_positions: torch.Tensor,
+        target_positions: torch.Tensor | None = None,
         # [num_tokens, hidden_size]
-        target_hidden_states: torch.Tensor,
+        target_hidden_states: torch.Tensor | None = None,
         # [batch_size]
-        next_token_ids: torch.Tensor,
-        token_indices_to_sample: torch.Tensor | None,
-        common_attn_metadata: CommonAttentionMetadata,
-        sampling_metadata: SamplingMetadata,
+        next_token_ids: torch.Tensor | None = None,
+        token_indices_to_sample: torch.Tensor | None = None,
+        common_attn_metadata: CommonAttentionMetadata | None = None,
+        sampling_metadata: SamplingMetadata | None = None,
         mm_embed_inputs: tuple[list[torch.Tensor], torch.Tensor] | None = None,
         num_rejected_tokens_gpu: torch.Tensor | None = None,
         slot_mappings: dict[str, torch.Tensor]
         | list[dict[str, torch.Tensor]]
         | None = None,
     ) -> torch.Tensor:
+        if isinstance(num_speculative_tokens, torch.Tensor):
+            # Backward compatibility with vLLM builds whose runner calls:
+            # propose(target_token_ids, target_positions, ..., slot_mappings)
+            old_target_token_ids = num_speculative_tokens
+            old_target_positions = target_token_ids
+            old_target_hidden_states = target_positions
+            old_next_token_ids = target_hidden_states
+            old_token_indices_to_sample = next_token_ids
+            old_common_attn_metadata = token_indices_to_sample
+            old_sampling_metadata = common_attn_metadata
+            old_mm_embed_inputs = sampling_metadata
+            old_num_rejected_tokens_gpu = mm_embed_inputs
+            old_slot_mappings = num_rejected_tokens_gpu
+
+            num_speculative_tokens = self.num_speculative_tokens
+            target_token_ids = old_target_token_ids
+            target_positions = old_target_positions
+            target_hidden_states = old_target_hidden_states
+            next_token_ids = old_next_token_ids
+            token_indices_to_sample = old_token_indices_to_sample
+            common_attn_metadata = old_common_attn_metadata
+            sampling_metadata = old_sampling_metadata
+            mm_embed_inputs = old_mm_embed_inputs
+            num_rejected_tokens_gpu = old_num_rejected_tokens_gpu
+            slot_mappings = old_slot_mappings
+        elif num_speculative_tokens is None:
+            num_speculative_tokens = self.num_speculative_tokens
+
+        assert target_token_ids is not None
+        assert target_positions is not None
+        assert target_hidden_states is not None
+        assert next_token_ids is not None
+        assert common_attn_metadata is not None
+        assert sampling_metadata is not None
+
         self.num_speculative_tokens = num_speculative_tokens
         self._last_draft_probs = None
         batch_size = common_attn_metadata.batch_size()
