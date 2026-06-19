@@ -409,17 +409,53 @@ class SpecDecodeBaseProposer:
 
         self.cudagraph_dispatcher.initialize_cudagraph_keys(eagle_cudagraph_mode)
 
-    def _greedy_sample(self, hidden_states: torch.Tensor) -> torch.Tensor:
+    @staticmethod
+    def _is_spec_decode_safe_draft_processor(processor: Any) -> bool:
+        return bool(getattr(processor, "supports_spec_decode", False))
+
+    def _has_spec_decode_safe_draft_processors(
+        self,
+        sampling_metadata: SamplingMetadata,
+    ) -> bool:
+        return any(
+            self._is_spec_decode_safe_draft_processor(processor)
+            for processor in sampling_metadata.logitsprocs.all
+        )
+
+    def _apply_spec_decode_safe_draft_processors(
+        self,
+        logits: torch.Tensor,
+        sampling_metadata: SamplingMetadata,
+    ) -> torch.Tensor:
+        for processor in sampling_metadata.logitsprocs.all:
+            if self._is_spec_decode_safe_draft_processor(processor):
+                logits = processor.apply(logits)
+        return logits
+
+    def _greedy_sample(
+        self,
+        hidden_states: torch.Tensor,
+        sampling_metadata: SamplingMetadata,
+    ) -> torch.Tensor:
         """Greedy-sample draft tokens from hidden states."""
-        if self.use_local_argmax_reduction:
+        if self.use_local_argmax_reduction and not (
+            self._has_spec_decode_safe_draft_processors(sampling_metadata)
+        ):
             return self.model.get_top_tokens(hidden_states)
-        return self.model.compute_logits(hidden_states).argmax(dim=-1)
+        logits = self.model.compute_logits(hidden_states)
+        logits = self._apply_spec_decode_safe_draft_processors(
+            logits, sampling_metadata
+        )
+        return logits.argmax(dim=-1)
 
     def _sample_from_logits(
         self,
         logits: torch.Tensor,
         sampling_metadata: SamplingMetadata,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        logits = self._apply_spec_decode_safe_draft_processors(
+            logits, sampling_metadata
+        )
         if not self._enable_probabilistic_draft_probs:
             return logits.argmax(dim=-1), None
         if sampling_metadata.all_greedy:
@@ -434,7 +470,7 @@ class SpecDecodeBaseProposer:
         sampling_metadata: SamplingMetadata,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         if not self._enable_probabilistic_draft_probs or sampling_metadata.all_greedy:
-            return self._greedy_sample(hidden_states), None
+            return self._greedy_sample(hidden_states, sampling_metadata), None
         logits = self.model.compute_logits(hidden_states)
         return self._sample_from_logits(logits, sampling_metadata)
 
