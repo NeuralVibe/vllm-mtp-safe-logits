@@ -422,14 +422,43 @@ class SpecDecodeBaseProposer:
             for processor in sampling_metadata.logitsprocs.all
         )
 
+    @staticmethod
+    def _combine_outputs_with_spec_tokens(
+        output_token_ids: list[list[int]],
+        spec_token_ids: list[list[int]] | None = None,
+    ) -> list[list[int]]:
+        if spec_token_ids is None:
+            return output_token_ids
+
+        return [
+            [*out, *spec] if spec else out
+            for out, spec in zip(output_token_ids, spec_token_ids)
+        ]
+
     def _apply_spec_decode_safe_draft_processors(
         self,
         logits: torch.Tensor,
         sampling_metadata: SamplingMetadata,
     ) -> torch.Tensor:
+        output_token_ids = None
+        if any(
+            getattr(processor, "requires_output_token_ids", False)
+            for processor in sampling_metadata.logitsprocs.all
+        ):
+            output_token_ids = self._combine_outputs_with_spec_tokens(
+                sampling_metadata.output_token_ids,
+                sampling_metadata.spec_token_ids,
+            )
+
         for processor in sampling_metadata.logitsprocs.all:
             if self._is_spec_decode_safe_draft_processor(processor):
-                logits = processor.apply(logits)
+                apply_with_output_ids = getattr(
+                    processor, "apply_with_output_ids", None
+                )
+                if apply_with_output_ids is not None:
+                    logits = apply_with_output_ids(logits, output_token_ids)
+                else:
+                    logits = processor.apply(logits)
         return logits
 
     def _greedy_sample(

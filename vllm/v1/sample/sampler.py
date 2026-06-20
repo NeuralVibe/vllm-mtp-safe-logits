@@ -380,10 +380,16 @@ class Sampler(nn.Module):
         )
         holder = sampling_metadata.thinking_budget_state_holder
         needs_thinking_combine = holder is not None and holder.has_tracked_requests()
+        needs_logitsproc_output_ids = any(
+            getattr(processor, "requires_output_token_ids", False)
+            for processor in sampling_metadata.logitsprocs.all
+        )
 
         output_token_ids = sampling_metadata.output_token_ids
         if predict_bonus_token and (
-            any_penalties_or_bad_words or needs_thinking_combine
+            any_penalties_or_bad_words
+            or needs_thinking_combine
+            or needs_logitsproc_output_ids
         ):
             # Combine base outputs with spec tokens when speculative decoding
             # is enabled.
@@ -402,7 +408,11 @@ class Sampler(nn.Module):
 
         # Apply logits processors which can impact greedy sampling.
         for processor in sampling_metadata.logitsprocs.non_argmax_invariant:
-            logits = processor.apply(logits)
+            apply_with_output_ids = getattr(processor, "apply_with_output_ids", None)
+            if apply_with_output_ids is not None:
+                logits = apply_with_output_ids(logits, output_token_ids)
+            else:
+                logits = processor.apply(logits)
 
         # Apply penalties (e.g., freq_penalties).
         logits = self.apply_penalties(logits, sampling_metadata, output_token_ids)

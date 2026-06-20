@@ -294,9 +294,13 @@ class RejectionSampler(nn.Module):
         )
         holder = sampling_metadata.thinking_budget_state_holder
         needs_thinking = holder is not None and holder.has_tracked_requests()
+        needs_logitsproc_output_ids = any(
+            getattr(processor, "requires_output_token_ids", False)
+            for processor in sampling_metadata.logitsprocs.all
+        )
 
         output_token_ids = sampling_metadata.output_token_ids
-        if any_penalties_or_bad_words or needs_thinking:
+        if any_penalties_or_bad_words or needs_thinking or needs_logitsproc_output_ids:
             output_token_ids = self._combine_outputs_with_spec_tokens(
                 output_token_ids,
                 sampling_metadata.spec_token_ids,
@@ -334,7 +338,13 @@ class RejectionSampler(nn.Module):
 
         for processor in sampling_metadata.logitsprocs.argmax_invariant:
             if getattr(processor, "supports_spec_decode", False):
-                logits = processor.apply(logits)
+                apply_with_output_ids = getattr(
+                    processor, "apply_with_output_ids", None
+                )
+                if apply_with_output_ids is not None:
+                    logits = apply_with_output_ids(logits, output_token_ids)
+                else:
+                    logits = processor.apply(logits)
 
         for processor in sampling_metadata.logitsprocs.non_argmax_invariant:
             if isinstance(processor, MinTokensLogitsProcessor):
@@ -342,7 +352,13 @@ class RejectionSampler(nn.Module):
                     logits, metadata.num_draft_tokens
                 )
             elif getattr(processor, "supports_spec_decode", False):
-                logits = processor.apply(logits)
+                apply_with_output_ids = getattr(
+                    processor, "apply_with_output_ids", None
+                )
+                if apply_with_output_ids is not None:
+                    logits = apply_with_output_ids(logits, output_token_ids)
+                else:
+                    logits = processor.apply(logits)
         if holder is not None and holder.has_tracked_requests():
             logits = holder.apply_to_logits(
                 logits,
